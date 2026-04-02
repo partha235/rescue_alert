@@ -1,0 +1,112 @@
+try:
+    import urequests as requests
+except:
+    import requests
+
+from machine import Pin, ADC
+from utime import sleep, sleep_ms,time
+import network
+import gc
+import ubinascii
+try:
+    from bps_cre import *     
+except:
+    pass
+
+gc.collect()
+
+SSID = bps_ssid
+PASSWORD = ssid_pas
+
+recipient_num = twilio_rnum
+sender_num = twilio_snum
+auth_token = twilio_tok
+account_sid = twilio_sid
+
+fs = Pin(25, Pin.IN)
+ss = ADC(Pin(34))
+
+threshold = 100
+
+last_sent_time = 0
+cooldown = 30   # seconds
+
+
+# ---------------- WIFI ----------------
+def connect_wifi():
+    station = network.WLAN(network.STA_IF)
+    station.active(True)
+
+    if not station.isconnected():
+        print("Connecting to WiFi...")
+        station.connect(SSID, PASSWORD)
+
+        timeout = 10
+        while not station.isconnected() and timeout > 0:
+            sleep(1)
+            timeout -= 1
+
+    if station.isconnected():
+        print("Connected:", station.ifconfig())
+    else:
+        print("WiFi Failed!")
+
+# ---------------- SMS ----------------
+def send_sms(message):
+    global last_sent_time
+
+    # cooldown protection
+    if time() - last_sent_time < cooldown:
+        print("Cooldown active, skipping SMS")
+        return
+
+    url = "https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json".format(account_sid)
+
+    # URL encode message
+    message = message.replace(" ", "%20")
+
+    data = "To={}&From={}&Body={}".format(recipient_num, sender_num, message)
+
+    print("Sending SMS...")
+
+    try:
+        response = requests.post(
+            url,
+            data=data,
+            auth=(account_sid, auth_token),
+            headers={'Content-Type': 'application/x-www-form-urlencoded'}
+        )
+
+        print("Status:", response.status_code)
+
+        if response.status_code == 201:
+            print("✅ SMS sent!")
+            last_sent_time = time()
+        else:
+            print("❌ Error:", response.text)
+
+        response.close()
+
+    except Exception as e:
+        print("Request failed:", e)
+
+
+# ---------------- MAIN LOOP ----------------
+def main():
+    connect_wifi()
+
+    while True:
+        if not fs.value():
+            send_sms("🔥 Fire detected! https://maps.google.com/?q=11.3845943,79.6976247")
+
+        if ss.read() > threshold:
+            send_sms("⚠ Gas Leak! https://maps.google.com/?q=11.3845943,79.6976247")
+        
+        else:
+            print("normal")
+
+        sleep(2)
+
+
+# ---------------- START ----------------
+main()

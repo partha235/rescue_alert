@@ -1,0 +1,190 @@
+try:
+    import urequests as requests
+except:
+    import requests
+
+from machine import Pin, ADC, UART
+from utime import sleep, sleep_ms, time
+import network
+import gc
+try:
+    from bps_cre import *     
+except:
+    pass
+
+gc.collect()
+
+SSID = bps_ssid
+PASSWORD = ssid_pas
+
+recipient_num = twilio_rnum
+sender_num = twilio_snum
+auth_token = twilio_tok
+account_sid = twilio_sid
+
+fs = Pin(25, Pin.IN)
+ss = ADC(Pin(34))
+but=Pin(15,Pin.IN,Pin.PULL_UP)
+
+# ✅ use UART1 (safe)
+gpsModule = UART(1, baudrate=9600, bits=8, parity=None, stop=1, rx=16, tx=17) 
+print(gpsModule)
+
+threshold = 100
+
+last_sent_time = 0
+cooldown = 30
+
+# GPS data
+latitude = ""
+longitude = ""
+satellites = ""
+GPStime = ""
+
+# GPS fallback coordinates
+DEFAULT_LATITUDE = 11.384609
+DEFAULT_LONGITUDE = 79.697655
+
+FIX_STATUS = False
+TIMEOUT = False
+
+# Time Zone Offset (e.g., IST = UTC+5:30 = 19800 seconds)
+TIME_ZONE_OFFSET = 5 * 3600 + 30 * 60
+
+# ---------------- WIFI ----------------
+def connect_wifi():
+    station = network.WLAN(network.STA_IF)
+    station.active(True)
+
+    if not station.isconnected():
+        print("Connecting...")
+        station.connect(SSID, PASSWORD)
+
+        for _ in range(10):
+            if station.isconnected():
+                break
+            sleep(1)
+
+    print("WiFi:", station.ifconfig())
+
+# ---------------- GPS ----------------
+def getGPS(gpsModule):
+    global FIX_STATUS, TIMEOUT, latitude, longitude, satellites, GPStime
+    
+    timeout = time() + 10
+
+    while True:
+        line = gpsModule.readline()
+
+        if line:
+            buff = str(line)
+            parts = buff.split(',')
+
+            if parts[0] == "b'$GPGGA" and len(parts) == 15:
+                if all(parts[1:8]):
+                    latitude = convertToDegree(parts[2])
+                    if parts[3] == 'S':
+                        latitude = -latitude
+
+                    longitude = convertToDegree(parts[4])
+                    if parts[5] == 'W':
+                        longitude = -longitude
+
+                    satellites = parts[7]
+                    GPStime = parts[1][0:2] + ":" + parts[1][2:4] + ":" + parts[1][4:6]
+
+                    FIX_STATUS = True
+                    return True   # ✅ IMPORTANT
+
+        if time() > timeout:
+            TIMEOUT = True
+            return False   # ✅ IMPORTANT
+
+        sleep_ms(500)
+
+        
+def convertToDegree(RawDegrees):
+
+    RawAsFloat = float(RawDegrees)
+    firstdigits = int(RawAsFloat/100) 
+    nexttwodigits = RawAsFloat - float(firstdigits*100) 
+    
+    Converted = float(firstdigits + nexttwodigits/60.0)
+    Converted = '{0:.6f}'.format(Converted) 
+    return str(Converted)
+    
+
+
+# ---------------- SMS ----------------
+def send_sms(message):
+    global last_sent_time
+
+    if time() - last_sent_time < cooldown:
+        print("Cooldown active")
+        return
+
+    url = "https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json".format(account_sid)
+
+    message = message.replace(" ", "%20")
+
+    data = "To={}&From={}&Body={}".format(recipient_num, sender_num, message)
+
+    try:
+        res = requests.post(
+            url,
+            data=data,
+            auth=(account_sid, auth_token),
+            headers={'Content-Type': 'application/x-www-form-urlencoded'}
+        )
+
+        print("Status:", res.status_code)
+
+        if res.status_code == 201:
+            print("SMS sent ✅")
+            last_sent_time = time()
+        else:
+            print("Error:", res.text)
+
+        res.close()
+
+    except Exception as e:
+        print("Failed:", e)
+
+
+# ---------------- MAIN ----------------
+def main():
+    connect_wifi()
+
+    while True:
+
+        gps_ok = getGPS(gpsModule)
+
+        if not gps_ok:
+            print("No GPS data. Using fallback location.")
+            latitude = str(DEFAULT_LATITUDE)
+            longitude = str(DEFAULT_LONGITUDE)
+
+        link = "https://maps.google.com/?q={},{}".format(latitude, longitude)
+
+        if not fs.value():
+            send_sms("🔥 Fire detected! " + link)
+ 
+        elif ss.read() > threshold:
+            send_sms("⚠ Gas Leak! " + link)
+
+        elif not but.value():
+            send_sms("📍 Manual Location: " + link)
+
+        else:
+            print("Latitude:", latitude)
+            print("Longitude:", longitude)
+            print("Satellites:", satellites)
+            print("Time:", GPStime)
+            print("----------------------")
+
+        sleep(2)
+
+
+# ---------------- START ----------------
+if __name__ == "__main__":
+    main()
