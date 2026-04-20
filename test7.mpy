@@ -1,131 +1,119 @@
-try:
-    import urequests as requests
-except:
-    import requests
-
-from machine import Pin, ADC, UART
-from utime import sleep, sleep_ms, time
-import network
-import gc
+# credential file import
 try:
     from bps_cre import *     
 except:
     pass
 
+try:
+    import urequests as requests
+except:
+    import requests
+
+from machine import Pin, SPI
+from utime import sleep_ms, time
+import network
+import ssd1306
+import gc
+
 gc.collect()
 
-SSID = bps_ssid
-PASSWORD = ssid_pas
+# ---------------- CONFIG ----------------
+SSID = "iPhone"
+PASSWORD = "12345678"
 
-recipient_num = twilio_rnum
-sender_num = twilio_snum
-auth_token = twilio_tok
-account_sid = twilio_sid
+recipient_num = "+917904333043"
+sender_num = "+12183221077"
+auth_token = "b8a59ff4a8377aafccdb990d3f890a34"
+account_sid = "AC367c0640459695746cb179da43cbb8f0"
 
-fs = Pin(25, Pin.IN)
-ss = ADC(Pin(34))
-but=Pin(15,Pin.IN,Pin.PULL_UP)
+latitude = 11.3901778
+longitude = 79.7037785
 
-# ✅ use UART1 (safe)
-gpsModule = UART(1, baudrate=9600, bits=8, parity=None, stop=1, rx=16, tx=17) 
-print(gpsModule)
+# ---------------- PINS ----------------
+sensor = Pin(4, Pin.IN)                    # vibration
+button = Pin(15, Pin.IN, Pin.PULL_UP)      # button
 
-threshold = 100
+# Encoder
+clk = Pin(25, Pin.IN, Pin.PULL_UP)
+dt  = Pin(26, Pin.IN, Pin.PULL_UP)
+sw  = Pin(27, Pin.IN, Pin.PULL_UP)
+
+# ---------------- OLED (SPI) ----------------
+spi = SPI(1, baudrate=10000000, polarity=0, phase=0,
+          sck=Pin(18), mosi=Pin(22))   # correct MOSI
+
+dc  = Pin(16)
+res = Pin(17)
+cs  = Pin(5)
+
+oled = ssd1306.SSD1306_SPI(128, 64, spi, dc, res, cs)
+
+# ---------------- GLOBALS ----------------
+counter = 0
+last_clk = clk.value()
+
+status_msg = "Idle"
 
 last_sent_time = 0
-cooldown = 30
+cooldown = 10  # seconds
 
-# GPS data
-latitude = ""
-longitude = ""
-satellites = ""
-GPStime = ""
-
-# GPS fallback coordinates
-DEFAULT_LATITUDE = 11.384609
-DEFAULT_LONGITUDE = 79.697655
-
-FIX_STATUS = False
-TIMEOUT = False
-
-# Time Zone Offset (e.g., IST = UTC+5:30 = 19800 seconds)
-TIME_ZONE_OFFSET = 5 * 3600 + 30 * 60
+last_vibration = 0
+last_button = 1
 
 # ---------------- WIFI ----------------
 def connect_wifi():
-    station = network.WLAN(network.STA_IF)
-    station.active(True)
+    sta = network.WLAN(network.STA_IF)
+    sta.active(True)
+    print(sta.scan())
 
-    if not station.isconnected():
-        print("Connecting...")
-        station.connect(SSID, PASSWORD)
+    if not sta.isconnected():
+        print("Connecting WiFi...")
+        sta.connect(SSID, PASSWORD)
 
-        for _ in range(10):
-            if station.isconnected():
-                break
-            sleep(1)
+        while not sta.isconnected():
+            sleep_ms(500)
 
-    print("WiFi:", station.ifconfig())
+    print("Connected:", sta.ifconfig())
 
-# ---------------- GPS ----------------
-def getGPS(gpsModule):
-    global FIX_STATUS, TIMEOUT, latitude, longitude, satellites, GPStime
-    
-    timeout = time() + 10
+# ---------------- DISPLAY ----------------
+def update_display():
+    oled.fill(0)
+    oled.text("Counter:", 0, 10)
+    oled.text(str(counter), 0, 25)
 
-    while True:
-        line = gpsModule.readline()
+    oled.text("Status:", 0, 45)
+    oled.text(status_msg, 60, 45)
 
-        if line:
-            buff = str(line)
-            parts = buff.split(',')
+    oled.show()
 
-            if parts[0] == "b'$GPGGA" and len(parts) == 15:
-                if all(parts[1:8]):
-                    latitude = convertToDegree(parts[2])
-                    if parts[3] == 'S':
-                        latitude = -latitude
+# ---------------- ENCODER ----------------
+def read_encoder():
+    global counter, last_clk, status_msg
 
-                    longitude = convertToDegree(parts[4])
-                    if parts[5] == 'W':
-                        longitude = -longitude
+    current_clk = clk.value()
 
-                    satellites = parts[7]
-                    GPStime = parts[1][0:2] + ":" + parts[1][2:4] + ":" + parts[1][4:6]
+    if last_clk == 1 and current_clk == 0:
+        if dt.value() == 1:
+            counter += 1
+        else:
+            counter -= 1
 
-                    FIX_STATUS = True
-                    return True   # ✅ IMPORTANT
+        status_msg = "Rotating"
+        update_display()
 
-        if time() > timeout:
-            TIMEOUT = True
-            return False   # ✅ IMPORTANT
-
-        sleep_ms(500)
-
-        
-def convertToDegree(RawDegrees):
-
-    RawAsFloat = float(RawDegrees)
-    firstdigits = int(RawAsFloat/100) 
-    nexttwodigits = RawAsFloat - float(firstdigits*100) 
-    
-    Converted = float(firstdigits + nexttwodigits/60.0)
-    Converted = '{0:.6f}'.format(Converted) 
-    return str(Converted)
-    
-
+    last_clk = current_clk
 
 # ---------------- SMS ----------------
 def send_sms(message):
-    global last_sent_time
+    global last_sent_time, status_msg
 
     if time() - last_sent_time < cooldown:
         print("Cooldown active")
+        status_msg = "Cooldown"
+        update_display()
         return
 
     url = "https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json".format(account_sid)
-
-    message = message.replace(" ", "%20")
 
     data = "To={}&From={}&Body={}".format(recipient_num, sender_num, message)
 
@@ -141,49 +129,64 @@ def send_sms(message):
 
         if res.status_code == 201:
             print("SMS sent ✅")
+            status_msg = "SMS Sent"
             last_sent_time = time()
         else:
             print("Error:", res.text)
+            status_msg = "SMS Error"
 
         res.close()
 
     except Exception as e:
         print("Failed:", e)
+        status_msg = "Net Error"
 
+    update_display()
 
 # ---------------- MAIN ----------------
 def main():
+    global last_vibration, last_button, status_msg
+
     connect_wifi()
+    update_display()
 
     while True:
+        read_encoder()
 
-        gps_ok = getGPS(gpsModule)
-
-        if not gps_ok:
-            print("No GPS data. Using fallback location.")
-            latitude = str(DEFAULT_LATITUDE)
-            longitude = str(DEFAULT_LONGITUDE)
+        vibration = sensor.value()
+        print(" vibration= ", vibration)
+        btn = button.value()
 
         link = "https://maps.google.com/?q={},{}".format(latitude, longitude)
 
-        if not fs.value():
-            send_sms("🔥 Fire detected! " + link)
- 
-        elif ss.read() > threshold:
-            send_sms("⚠ Gas Leak! " + link)
+        # -------- VIBRATION ALERT --------
+        if vibration == 1 and last_vibration == 0:
+            print("Vibration detected!")
 
-        elif not but.value():
-            send_sms("📍 Manual Location: " + link)
+            status_msg = "Vibration!"
+            update_display()
 
-        else:
-            print("Latitude:", latitude)
-            print("Longitude:", longitude)
-            print("Satellites:", satellites)
-            print("Time:", GPStime)
-            print("----------------------")
+            msg = "⚠ Vibration Alert!\nCount: {}\n{}".format(counter, link)
+            send_sms(msg)
 
-        sleep(2)
+        # -------- BUTTON ALERT --------
+        if btn == 0 and last_button == 1:
+            print("Button pressed!")
 
+            status_msg = "Button Press"
+            update_display()
+
+            msg = "📍 Manual Alert\nCount: {}\n{}".format(counter, link)
+            send_sms(msg)
+
+        # -------- IDLE STATE --------
+        if vibration == 0 and btn == 1:
+            status_msg = "Idle"
+
+        last_vibration = vibration
+        last_button = btn
+
+        sleep_ms(20)
 
 # ---------------- START ----------------
 if __name__ == "__main__":

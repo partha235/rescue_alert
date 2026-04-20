@@ -1,200 +1,37 @@
-import network
-from umqtt.simple import MQTTClient
-from machine import Pin, UART, I2C, ADC,PWM
-import ssd1306
-import dht
-from utime import sleep, sleep_ms, time, localtime, mktime
-import gc
-import urequests as requests
+from machine import Pin
+import time
 
-# Adafruit IO Credentials
-ADAFRUIT_IO_URL = 'io.adafruit.com'
-ADAFRUIT_IO_USERNAME = 'bps235'  # Replace with your username
-ADAFRUIT_IO_KEY = 'ADAFRUIT_KEY'  # Replace with your key
-FEED_NAME = "gps-fire"
+# Pin setup
+clk = Pin(18, Pin.IN, Pin.PULL_UP)
+dt  = Pin(19, Pin.IN, Pin.PULL_UP)
+sw  = Pin(21, Pin.IN, Pin.PULL_UP)
 
-# Twilio SMS Credentials
-recipient_num = "+91xxxxxxxxxx"  # Replace
-sender_num = "+1xxxxxxxxxx"  # Replace
-auth_token = "twilio_tok"  # Replace
-account_sid = "twilio_ssid"  # Replace
+counter = 0
+last_clk = clk.value()
 
-# Wi-Fi Credentials
-SSID = "hello"
-PASSWORD = "hello12345"
-
-
-
-#value for map
-val=22.8
-
-# Pins Setup
-gas_sensor = ADC(Pin(34))  # Gas Sensor (Analog)
-fire_sensor = Pin(26, Pin.IN)  # Fire Sensor (Digital, Active LOW)
-dht_sensor = dht.DHT11(Pin(14))  # DHT11 Sensor#
-buz = Pin(33, Pin.OUT)
-
-# I2C & OLED Display
-i2c = I2C(scl=Pin(22), sda=Pin(21))
-oled = ssd1306.SSD1306_I2C(128, 64, i2c)
-
-#  for servo motor
-x = PWM(Pin(23))  # Initialize PWM on Pin 23
-x.freq(50)  # Set frequency to 50Hz for servo control
-
-# GPS Module
-gps = UART(1, baudrate=9600, bits=8, parity=None, stop=1, rx=14, tx=16)
-DEFAULT_LATITUDE = 11.384609
-DEFAULT_LONGITUDE = 79.697655
-latitude, longitude = DEFAULT_LATITUDE, DEFAULT_LONGITUDE
-
-gc.collect()
-
-# Wi-Fi Connection
-def connect_wifi():
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    if not wlan.isconnected():
-        print("Connecting to WiFi...")
-        wlan.connect(SSID, PASSWORD)
-        sleep_ms(500)
-        while not wlan.isconnected():
-            pass
-    print("Connected! IP:", wlan.ifconfig()[0])
-
-# GPS Parsing Function
-def getGPS():
-    global latitude, longitude
-    timeout = time() + 5  # Timeout in 5 seconds
-    while True:
-        line = gps.readline()
-        if line:
-            parts = str(line).split(',')
-            if parts[0] == "b'$GPGGA" and len(parts) == 15:
-                if all(parts[1:8]):
-                    latitude = convertToDegree(parts[2])
-                    longitude = convertToDegree(parts[4])
-                    if parts[3] == 'S':
-                        latitude = -latitude
-                    if parts[5] == 'W':
-                        longitude = -longitude
-                    print(f"GPS Updated: {latitude}, {longitude}")
-                    return
-        if time() > timeout:
-            print("GPS Timeout, using default location.")
-            latitude, longitude = DEFAULT_LATITUDE, DEFAULT_LONGITUDE
-            return
-        sleep_ms(10)
-
-def convertToDegree(rawDegrees):
-    rawAsFloat = float(rawDegrees)
-    firstdigits = int(rawAsFloat / 100)
-    nexttwodigits = rawAsFloat - float(firstdigits * 100)
-    return float(firstdigits + nexttwodigits / 60.0)
-
-# MQTT Setup
-def setup_mqtt():
-    client = MQTTClient(client_id=b'bps', 
-                        server=ADAFRUIT_IO_URL, 
-                        user=ADAFRUIT_IO_USERNAME, 
-                        password=ADAFRUIT_IO_KEY, 
-                        ssl=False)
-    client.connect()
-    return client
-
-# Publish Sensor Data
-def publish_data(client, latitude, longitude, temp, humidity, gas_value_s, fire_status):
-    payload1 = f"{val},{latitude},{longitude}"
-    payload2 = f"{temp}"
-    payload3 = f"{humidity}"
-    payload4 = f"{fire_status}"
-    payload5 = f"{gas_value_s}"
-
-    try:
-        client.publish(f"{ADAFRUIT_IO_USERNAME}/feeds/gps-fire.location/csv", payload1)
-        client.publish(f"{ADAFRUIT_IO_USERNAME}/feeds/gps-fire.temp", payload2)
-        client.publish(f"{ADAFRUIT_IO_USERNAME}/feeds/gps-fire.humidity", payload3)
-        client.publish(f"{ADAFRUIT_IO_USERNAME}/feeds/gps-fire.fire", payload4)
-        client.publish(f"{ADAFRUIT_IO_USERNAME}/feeds/gps-fire.smoke", payload5)
-        print("Data Published:", payload1)
-    except Exception as e:
-        print("Error Publishing Data:", e)
-
-# Send SMS Alert
-def send_sms(message):
-    url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
-    data = f"To={recipient_num}&From={sender_num}&Body={message}"
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    try:
-        response = requests.post(url, data=data, auth=(account_sid, auth_token), headers=headers)
-        if response.status_code == 201:
-            print("🔥 SMS Sent!")
-        else:
-            print("SMS Error:", response.text)
-    except Exception as e:
-        print("Error Sending SMS:", e)
-
-# Read Sensors
-def read_sensors():
-    gas_value = gas_sensor.read()
-    gas_value_s = (gas_value / 4095) * 100  # Scale to 0-100
-    fire_status = fire_sensor.value()
-    print("fire_sen = ",fire_status)
-
-    for _ in range(3):  # Retry 3 times
-        try:
-            sleep(5)  # Give the sensor enough time
-            dht_sensor.measure()  # Read data
-            temp = dht_sensor.temperature()
-            humidity = dht_sensor.humidity()
-            temp_f = temp * (9/5) + 32.0
-            return temp, humidity, gas_value_s, fire_status
-        except OSError as e:
-            print("⚠️ DHT11 Read Error, Retrying...", e)
-
-    print("❌ DHT11 failed after multiple attempts!")
-    return None, None, gas_value_s, fire_status  # Return default values
-
-
-
-
-# OLED Display Function
-def display_info(temp, humidity, gas_value, fire_status):
-    oled.fill(0)
-    oled.text(f"Temp: {temp}C", 0, 0)
-    oled.text(f"Humidity: {humidity}%", 0, 10)
-    oled.text(f"Gas: {gas_value}", 0, 20)
-    oled.text(f"Fire: {'Yes' if fire_status == 0 else 'No'}", 0, 30)
-    oled.show()
-
-# Main Function
-def main():
-    connect_wifi()
-    sleep(1)
-    mqtt_client = setup_mqtt()
+def read_encoder():
+    global counter, last_clk
     
-    while True:
-        x.duty_u16(1638)
-        getGPS()
-        temp, humidity, gas_value, fire_status = read_sensors()
-        print(f"Temp: {temp}C, Humidity: {humidity}%, Gas: {gas_value}, Fire: {fire_status}")
-
-        # Fire Alert
-        if fire_status == 0:  # Fire detected
-            print("🔥 Fire Detected! Sending Alert...")
-            send_sms(f"Fire Detected! Location: https://www.google.com/maps?q={latitude},{longitude}&z=17")
-            x.duty_u16(8192)
-            led.value(0)
+    current_clk = clk.value()
+    
+    if current_clk != last_clk:
+        # Detect direction
+        if dt.value() != current_clk:
+            counter += 1
         else:
-            led.value(1)
+            counter -= 1
+        
+        print("Counter:", counter)
+    
+    last_clk = current_clk
 
-        # Publish Data
-        publish_data(mqtt_client, latitude, longitude, temp, humidity, gas_value, fire_status)
+def check_button():
+    if sw.value() == 0:   # pressed
+        print("Button Pressed")
+        time.sleep_ms(300)  # debounce
 
-        # Update OLED
-        display_info(temp, humidity, gas_value, fire_status)
-
-        sleep(30)
-
-if __name__ == "__main__":
-    main()
+# Main loop
+while True:
+    read_encoder()
+    check_button()
+    time.sleep_ms(2)

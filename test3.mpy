@@ -1,101 +1,19 @@
-from machine import Pin, UART
-import gc
-from utime import sleep, sleep_ms, time, localtime, mktime
-import time
+from machine import Pin
+from utime import sleep_ms
 
-gc.collect()
+sensor = Pin(4, Pin.IN)
 
-count=0
-# GPS Module Setup
-gpsModule = UART(1, baudrate=9600, bits=8, parity=None, stop=1, rx=16, tx=17)  # UART for GPS communication
+last_state = 0
 
-print(gpsModule)
+while True:
+    current = sensor.value()
 
-TIMEOUT = False
-FIX_STATUS = False
+    # Detect only change (edge detection)
+    if current == 1 and last_state == 0:
+        print("Vibration detected!")
 
-latitude = ""
-longitude = ""
-satellites = ""
-GPStime = ""
+    elif current == 0 and last_state == 1:
+        print("Stopped")
 
-# GPS Parsing Function
-buffer = ""
-
-def getGPS(gpsModule):
-    global latitude, longitude, FIX_STATUS, satellites, GPStime, buffer,tim
-
-    timeout = time.time() + 5
-
-    while True:
-        if gpsModule.any():
-            chunk = gpsModule.read().decode('utf-8', 'ignore')
-            buffer += chunk
-
-            if "\n" in buffer:
-                lines = buffer.split("\n")
-
-                for line in lines[:-1]:
-                    line = line.strip()
-                    print("FULL:", line)
-
-                    parts = line.split(',')
-
-                    if parts[0] in ["$GPGGA", "$GNGGA"]:
-                        if len(parts) > 5 and parts[2] and parts[4]:
-
-                            latitude = convertToDegree(parts[2])
-                            if parts[3] == 'S':
-                                latitude = -latitude
-
-                            longitude = convertToDegree(parts[4])
-                            if parts[5] == 'W':
-                                longitude = -longitude
-
-                            satellites = parts[7]
-                            x=parts[1]
-                            # print(type(x))
-                            time_int = int(x.split('.')[0])
-                            print(time_int)
-                            GPStime = parts[1][0:2] + ":" + parts[1][2:4] + ":" + parts[1][4:6]
-
-                            FIX_STATUS = True
-                            return True
-
-                buffer = lines[-1]  # keep incomplete part
-
-        if time.time() > timeout:
-            FIX_STATUS = False
-            return False
-
-        sleep_ms(10)
-
-# Convert GPS Coordinates to Degrees
-def convertToDegree(rawDegrees):
-    rawAsFloat = float(rawDegrees)
-    firstdigits = int(rawAsFloat / 100)
-    nexttwodigits = rawAsFloat - float(firstdigits * 100)
-    converted = float(firstdigits + nexttwodigits / 60.0)
-    return '{0:.6f}'.format(converted)
-
-# Main Loop
-while True:    
-    getGPS(gpsModule)  # Get the GPS data
-    count+=1
-    print("working",count)
-
-    if FIX_STATUS:
-        # print("Printing GPS data...")
-        # print("Latitude: " + latitude)
-        # print("Longitude: " + longitude)
-        # print("Satellites: " + satellites)
-        # print("Time: " + GPStime)
-        print("act time : ")
-        print("----------------------")
-        
-        FIX_STATUS = False  # Reset the fix status for the next iteration
-    else:
-        print("No GPS data is found.")
-        TIMEOUT = False  # Reset the timeout flag
-
-    sleep(10)  # Optional: Pause for 1 second between cycles to avoid overload
+    last_state = current
+    sleep_ms(50)

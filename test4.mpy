@@ -1,127 +1,177 @@
-from machine import Pin, UART
+try:
+    import urequests as requests
+except:
+    import requests
+
+from machine import Pin, ADC, UART
+from utime import sleep, sleep_ms, time
+import network
 import gc
-from utime import sleep, sleep_ms, time, localtime, mktime
+try:
+    from bps_cre import *     
+except:
+    pass
+import ssd1306
 import time
 
 gc.collect()
 
-count=0
-# GPS Module Setup
-gpsModule = UART(1, baudrate=9600, bits=8, parity=None, stop=1, rx=16, tx=17)  # UART for GPS communication
+latitude = 11.3901778
+longitude = 79.7037785
 
-print(gpsModule)
+sensor = Pin(4, Pin.IN)
+button =Pin(15,Pin.IN,Pin.PULL_UP)
 
-TIMEOUT = False
-FIX_STATUS = False
+# ---------------- OLED SETUP (SPI) ----------------
+spi = SPI(1, baudrate=10000000, polarity=0, phase=0,
+          sck=Pin(18), mosi=Pin(22))
 
-latitude = ""
-longitude = ""
-satellites = ""
-GPStime = ""
+dc  = Pin(16)
+res = Pin(17)
+cs  = Pin(5)
 
-# GPS Parsing Function
-buffer = ""
+oled = ssd1306.SSD1306_SPI(128, 64, spi, dc, res, cs)
 
-def getGPS(gpsModule):
-    global latitude, longitude, FIX_STATUS, satellites, GPStime, buffer,tim
+# ---------------- ENCODER SETUP ----------------
+clk = Pin(25, Pin.IN)
+dt  = Pin(26, Pin.IN )
+sw  = Pin(27, Pin.IN )
 
-    timeout = time.time() + 5
+counter = 0
+last_clk = clk.value()
+oled.fill(0)
+oled.text("Counter:", 10, 20)
+oled.show()
+SSID = bps_ssid
+PASSWORD = ssid_pas
+
+recipient_num = twilio_rnum
+sender_num = twilio_snum
+auth_token = twilio_tok
+account_sid = twilio_sid
+
+
+
+# ---------------- WIFI ----------------
+def connect_wifi():
+    station = network.WLAN(network.STA_IF)
+    station.active(True)
+
+    if not station.isconnected():
+        print("Connecting...")
+        station.connect(SSID, PASSWORD)
+
+        for _ in range(10):
+            if station.isconnected():
+                break
+            sleep(1)
+
+    print("WiFi:", station.ifconfig())
+
+
+# ---------------- FUNCTIONS ----------------
+def update_display():
+    oled.fill(0)
+    oled.text("Counter:", 10, 20)
+    oled.text(str(counter), 10, 40)
+    oled.show()
+
+def read_encoder():
+    global counter, last_clk
+    
+    current_clk = clk.value()
+
+    # Count only on FALLING edge
+    if last_clk == 1 and current_clk == 0:
+        if dt.value() == 1:
+            counter += 1
+        else:
+            counter -= 1
+        
+        update_display()
+
+    last_clk = current_clk
+
+def check_button():
+    global counter
+    if sw.value() == 0:
+        counter = 0
+        update_display()
+        time.sleep_ms(300)
+
+# ---------------- MAIN LOOP ----------------
+update_display()
+
+# ---------------- SMS ----------------
+def send_sms(message):
+    global last_sent_time
+
+    if time() - last_sent_time < cooldown:
+        print("Cooldown active")
+        return
+
+    url = "https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json".format(account_sid)
+
+    message = message.replace(" ", "%20")
+
+    data = "To={}&From={}&Body={}".format(recipient_num, sender_num, message)
+
+    try:
+        res = requests.post(
+            url,
+            data=data,
+            auth=(account_sid, auth_token),
+            headers={'Content-Type': 'application/x-www-form-urlencoded'}
+        )
+
+        print("Status:", res.status_code)
+
+        if res.status_code == 201:
+            print("SMS sent ✅")
+            last_sent_time = time()
+        else:
+            print("Error:", res.text)
+
+        res.close()
+
+    except Exception as e:
+        print("Failed:", e)
+
+
+# ---------------- MAIN ----------------
+def main():
+    connect_wifi()
 
     while True:
-        if gpsModule.any():
-            chunk = gpsModule.read().decode('utf-8', 'ignore')
-            buffer += chunk
 
-            if "\n" in buffer:
-                lines = buffer.split("\n")
+        gps_ok = getGPS(gpsModule)
 
-                for line in lines[:-1]:
-                    line = line.strip()
-                    print("FULL:", line)
+        if not gps_ok:
+            print("No GPS data. Using fallback location.")
+            latitude = str(DEFAULT_LATITUDE)
+            longitude = str(DEFAULT_LONGITUDE)
 
-                    parts = line.split(',')
+        link = "https://maps.google.com/?q={},{}".format(latitude, longitude)
 
-                    if parts[0] in ["$GPGGA", "$GNGGA"]:
-                        if len(parts) > 5 and parts[2] and parts[4]:
+        if not fs.value():
+            send_sms("🔥 Fire detected! " + link)
+ 
+        elif ss.read() > threshold:
+            send_sms("⚠ Gas Leak! " + link)
 
-                            latitude = convertToDegree(parts[2])
-                            if parts[3] == 'S':
-                                latitude = -latitude
+        elif not but.value():
+            send_sms("📍 Manual Location: " + link)
 
-                            longitude = convertToDegree(parts[4])
-                            if parts[5] == 'W':
-                                longitude = -longitude
+        else:
+            print("Latitude:", latitude)
+            print("Longitude:", longitude)
+            print("Satellites:", satellites)
+            print("Time:", GPStime)
+            print("----------------------")
 
-                            satellites = parts[7]
-
-                            actual_time(longitude, parts[1])
-                            GPStime = parts[1][0:2] + ":" + parts[1][2:4] + ":" + parts[1][4:6]
-
-                            FIX_STATUS = True
-                            return True
-
-                buffer = lines[-1]  # keep incomplete part
-
-        if time.time() > timeout:
-            FIX_STATUS = False
-            return False
-
-        sleep_ms(10)
-
-# Convert GPS Coordinates to Degrees
-def convertToDegree(rawDegrees):
-    rawAsFloat = float(rawDegrees)
-    firstdigits = int(rawAsFloat / 100)
-    nexttwodigits = rawAsFloat - float(firstdigits * 100)
-    converted = float(firstdigits + nexttwodigits / 60.0)
-    return round(converted, 6)
-
-def actual_time(longitude, gps_raw_time):
-    # Convert GPS time
-    t = int(gps_raw_time.split('.')[0])
-
-    hour   = t // 10000
-    minute = (t % 10000) // 100
-    second = t % 100
-
-    # Convert longitude to time offset
-    offset = float(longitude) / 15.0
-
-    offset_hour = int(offset)
-    offset_min  = int((offset - offset_hour) * 60)
-
-    # Apply offset
-    hour += offset_hour
-    minute += offset_min
-
-    if minute >= 60:
-        minute -= 60
-        hour += 1
-
-    if hour >= 24:
-        hour -= 24
-
-    print("Solar Time:", f"{hour:02d}:{minute:02d}:{second:02d}")
+        sleep(2)
 
 
-# Main Loop
-while True:    
-    getGPS(gpsModule)  # Get the GPS data
-    count+=1
-    print("working",count)
-
-    if FIX_STATUS:
-        # print("Printing GPS data...")
-        # print("Latitude: " + latitude)
-        # print("Longitude: " + longitude)
-        # print("Satellites: " + satellites)
-        # print("Time: " + GPStime)
-        print("act time : ")
-        print("----------------------")
-        
-        FIX_STATUS = False  # Reset the fix status for the next iteration
-    else:
-        print("No GPS data is found.")
-        TIMEOUT = False  # Reset the timeout flag
-
-    sleep(10)  # Optional: Pause for 1 second between cycles to avoid overload
+# ---------------- START ----------------
+if __name__ == "__main__":
+    main()

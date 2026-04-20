@@ -1,127 +1,62 @@
-import network
-import ujson
-from umqtt.simple import MQTTClient
-from machine import Pin, UART
-import time, utime
+from machine import Pin, SPI
+import ssd1306
+import time
 
-try:
-    from bps_cre import *     
-except:
-    pass
+# ---------------- OLED SETUP (SPI) ----------------
+spi = SPI(1, baudrate=10000000, polarity=0, phase=0,
+          sck=Pin(18), mosi=Pin(22))
 
-# Replace these with your Adafruit IO credentials
-ADAFRUIT_IO_URL     = 'io.adafruit.com' 
-ADAFRUIT_IO_USERNAME = aio_uname
-ADAFRUIT_IO_KEY = aio_tok
-FEED_NAME = "location"  # Make sure this matches your feed name exactly
+dc  = Pin(16)
+res = Pin(17)
+cs  = Pin(5)
 
-mqtt_client_id      = bytes('bps', 'utf-8')
+oled = ssd1306.SSD1306_SPI(128, 64, spi, dc, res, cs)
 
-# Wi-Fi credentials
-SSID = bps_ssid
-PASSWORD = ssid_pas
+# ---------------- ENCODER SETUP ----------------
+clk = Pin(25, Pin.IN)
+dt  = Pin(26, Pin.IN )
+sw  = Pin(27, Pin.IN )
 
-# Predefined fallback GPS coordinates (as floats, not strings)
-DEFAULT_LATITUDE = 11.384609
-DEFAULT_LONGITUDE = 79.697655
+counter = 0
+last_clk = clk.value()
+oled.fill(0)
+oled.text("Counter:", 10, 20)
+oled.show()
 
-# GPS module setup
-gps = UART(1, baudrate=9600, tx=17, rx=16, timeout=500)
+# ---------------- FUNCTIONS ----------------
+def update_display():
+    oled.fill(0)
+    oled.text("Counter:", 10, 20)
+    oled.text(str(counter), 10, 40)
+    oled.show()
 
-# Declare latitude and longitude as global variables
-latitude = None
-longitude = None
-
-def connect_wifi():
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    if not wlan.isconnected():
-        print("Connecting to WiFi...")
-        wlan.connect(SSID, PASSWORD)
-        while not wlan.isconnected():
-            pass
-    print("Connected! IP address:", wlan.ifconfig()[0])
-
-# GPS Parsing Function
-def getGPS(gpsModule):
-    global latitude, longitude, FIX_STATUS, TIMEOUT, satellites, GPStime
+def read_encoder():
+    global counter, last_clk
     
-    timeout = time.time() + 5  # Timeout after 5 seconds
-    while True:
-        line = gpsModule.readline()
-        if line:
-            buff = str(line)
-            parts = buff.split(',')
-            
-            if parts[0] == "b'$GPGGA" and len(parts) == 15:  # Check for valid GPS sentence
-                if all(parts[1:8]):  # Ensure necessary parts are present
-                    print(buff)
-                    latitude = convertToDegree(parts[2])
-                    if parts[3] == 'S':
-                        latitude = -latitude
-                    longitude = convertToDegree(parts[4])
-                    if parts[5] == 'W':
-                        longitude = -longitude
-                    satellites = parts[7]
-                    GPStime = parts[1][0:2] + ":" + parts[1][2:4] + ":" + parts[1][4:6]
-                    message = f"https://www.google.com/maps?q={latitude},{longitude}&z=17&hl=en"
-                    print(message)
-                    FIX_STATUS = True
-                    break
-        if time.time() > timeout:
-            TIMEOUT = True
-            break
-        utime.sleep_ms(10)
+    current_clk = clk.value()
 
-# Convert GPS coordinates to degrees
-def convertToDegree(RawDegrees):
-    RawAsFloat = float(RawDegrees)
-    firstdigits = int(RawAsFloat / 100) 
-    nexttwodigits = RawAsFloat - float(firstdigits * 100)
-    
-    Converted = float(firstdigits + nexttwodigits / 60.0)
-    Converted = '{0:.6f}'.format(Converted) 
-    return str(Converted)
-
-def setup_mqtt():
-    client = MQTTClient(client_id=mqtt_client_id, 
-                    server=ADAFRUIT_IO_URL, 
-                    user=ADAFRUIT_IO_USERNAME, 
-                    password=ADAFRUIT_IO_KEY,
-                    ssl=False)
-    client.connect()
-    return client
-
-def publish_location(client, latitude, longitude):
-    # Format the data as a CSV string: "lat,lon"
-    payload = f"22.56,{latitude},{longitude}"
-    print("payload = ", payload)
-    print(type(payload))
-    print("Publishing to Adafruit IO:", payload)
-    try:
-        topic = f"{ADAFRUIT_IO_USERNAME}/feeds/{FEED_NAME}/csv"
-        client.publish(topic, payload)
-        print("Data published successfully!")
-    except Exception as e:
-        print("Error publishing data:", e)
-
-def main():
-    global latitude, longitude  # Ensure latitude and longitude are accessible here
-    connect_wifi()
-    mqtt_client = setup_mqtt()
-    
-    while True:
-        print("Fetching GPS data...")
-        getGPS(gps)  # Ensure GPS data is updated
+    # Count only on FALLING edge
+    if last_clk == 1 and current_clk == 0:
+        if dt.value() == 1:
+            counter += 1
+        else:
+            counter -= 1
         
-        if latitude is None or longitude is None:  # If no GPS data is available
-            print("No GPS data available. Using fallback location.")
-            latitude = DEFAULT_LATITUDE
-            longitude = DEFAULT_LONGITUDE
-        
-        print(f"Location: Latitude={latitude}, Longitude={longitude}")
-        publish_location(mqtt_client, latitude, longitude)
-        time.sleep(30)
+        update_display()
 
-if __name__ == "__main__":
-    main()
+    last_clk = current_clk
+
+def check_button():
+    global counter
+    if sw.value() == 0:
+        counter = 0
+        update_display()
+        time.sleep_ms(300)
+
+# ---------------- MAIN LOOP ----------------
+update_display()
+
+while True:
+    read_encoder()
+    check_button()
+    time.sleep_ms(2)

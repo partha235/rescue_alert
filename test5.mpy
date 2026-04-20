@@ -45,6 +45,7 @@ def send_sms(recipient, sender,
 def connect_wifi(ssid, password):
     station = network.WLAN(network.STA_IF)
     station.active(True)
+    print(station.scan())
     station.connect(ssid, password)
     while station.isconnected() == False:
       pass
