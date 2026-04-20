@@ -21,10 +21,10 @@ gc.collect()
 SSID = "iPhone"
 PASSWORD = "12345678"
 
-recipient_num = "+917904333043"
-sender_num = "+12183221077"
-auth_token = "b8a59ff4a8377aafccdb990d3f890a34"
-account_sid = "AC367c0640459695746cb179da43cbb8f0"
+recipient_num = twilio_rnum
+sender_num = twilio_snum
+auth_token = twilio_tok
+account_sid = twilio_sid
 
 latitude = 11.3901778
 longitude = 79.7037785
